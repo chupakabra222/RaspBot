@@ -1,10 +1,14 @@
-﻿using AngleSharp;
-using AngleSharp.Dom;
-using Microsoft.VisualBasic;
-using System.Text;
+﻿using System;
+using AngleSharp;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.ReplyMarkups;
+using AngleSharp.Dom;
+using System.Text;
+using System.Linq;
 
 namespace RaspBot
 {
@@ -13,8 +17,12 @@ namespace RaspBot
         static Program()
         {
             context = BrowsingContext.New(Configuration.Default.WithDefaultLoader());
-            token = "6591554925:AAFQjEOLUACFTtpkgF0g6RhPGch17NHy3wY";
+            using (StreamReader reader = new StreamReader("token.txt"))
+            {
+                token = reader.ReadToEnd();
+            } 
             client = new TelegramBotClient(token);
+            week = 1;
         }
         static async Task Main(string[] args)
         {
@@ -28,57 +36,87 @@ namespace RaspBot
         }
         static async Task TgUpdateHandler(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
         {
-            ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup(new[] {
+            try
+            {
+                ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup(new[] {
                             new KeyboardButton[] {"Понедельник", "Вторник", "Среда"},
-                            new KeyboardButton[] {"Четверг", "Пятница", "Суббота"}}); ;
-            if (update != null)
-                if (update.Message != null)
-                    if (update.Message.Text == "/start")
+                            new KeyboardButton[] {"Четверг", "Пятница", "Суббота"},
+            });
+
+
+                if (update != null)
+                    if (update.Message != null)
                     {
 
-                        await botClient.SendTextMessageAsync(
-                            chatId: update.Message.Chat.Id,
-                            text: "Выберите день недели",
-                            replyMarkup: keyboard);
+
+                        if (update.Message.Text == "/start")
+                        {
+
+                            await botClient.SendTextMessageAsync(
+                                chatId: update.Message.Chat.Id,
+                                text: "Выберите день недели",
+                                replyMarkup: keyboard);
+                        }
+
+                        else
+                        {
+                            await HandleRequest(update, keyboard, week);
+                        }
                     }
-                    else
-                    {
-                        int counter = 1;
-                        foreach (var keyboardLine in keyboard.Keyboard)
-                            foreach (var btn in keyboardLine)
-                            { 
-                                if (btn.Text == update.Message.Text)
-                                {
-                                    IDocument doc = await Parser.GetCurrentDocument(1);
-                                    string rasp = Parser.GetRasp(doc, counter);
-                                    if (rasp != null)
-                                    {
-                                        await client.SendTextMessageAsync(
-                                            chatId: update.Message.Chat.Id,
-                                            text: rasp,
-                                            replyMarkup: keyboard);
-                                    }
-                                    else
-                                    {
-                                        await client.SendTextMessageAsync(
-                                            chatId: update.Message.Chat.Id,
-                                            text: "Ошибка",
-                                            replyMarkup: keyboard);
-                                    }
-                                }
-                                counter++;
-                    }       }
-
+            }
+            catch (Exception ex)
+            {
+               
+            }
 
         }
         static async Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
         {
-            Console.WriteLine(exception.Message);
+            
+        }
+
+        static async Task HandleRequest(Update update, ReplyKeyboardMarkup keyboard, int week)
+        {
+            int counter = 1;
+            IDocument doc;
+
+            foreach (var keyboardLine in keyboard.Keyboard)
+                foreach (var btn in keyboardLine)
+                {
+                    if (btn.Text == update.Message.Text)
+                    {
+                        doc = await Parser.GetCurrentDocument(week);
+                        if (doc == null)
+                        {
+                            await client.SendTextMessageAsync(
+                                chatId: update.Message.Chat.Id,
+                                text: "Расписание на эту неделю не доступно, попробуйте позже",
+                                replyMarkup: keyboard);
+                        }
+                        string rasp = Parser.GetRasp(doc, counter);
+                        if (rasp != null)
+                        {
+                            await client.SendTextMessageAsync(
+                                chatId: update.Message.Chat.Id,
+                                text: rasp,
+                                replyMarkup: keyboard);
+                        }
+                        else
+                        {
+                            await client.SendTextMessageAsync(
+                                chatId: update.Message.Chat.Id,
+                                text: "Ошибка",
+                                replyMarkup: keyboard);
+                        }
+                    }
+                    counter++;
+                }
         }
 
         static IBrowsingContext context;
         static TelegramBotClient client;
         static string token;
+        static int week;
         private class Parser
         {
             public static async Task<IDocument> GetCurrentDocument(int week)
@@ -89,10 +127,13 @@ namespace RaspBot
                 string uri = builder.ToString();
                 IDocument doc = await context.OpenAsync(uri);
 
-                DateTime strDate = ParseToDate(doc);
+                if (doc != null)
+                {
+                    DateTime strDate = ParseToDate(doc);
 
-                if (DateTime.Now - strDate > new TimeSpan(1, 0, 0))
-                    doc = await GetCurrentDocument(++week);
+                    if (DateTime.Now - strDate > new TimeSpan(1, 0, 0))
+                        doc = await GetCurrentDocument(++week);
+                }
                 return doc;
             }
             public static DateTime ParseToDate(IDocument doc)
@@ -126,6 +167,35 @@ namespace RaspBot
                                 builder.Append(time[1].TextContent);
                                 timeSelector++;
                             }
+                            IElement border = cells[day].QuerySelector(".lesson-border");
+                            string lessonType = null;
+                            if (border != null)
+                                lessonType = border.ClassList[2];
+
+                            if (lessonType != null && cells[day].TextContent.Length > 0)
+                                switch (lessonType)
+                                {
+                                    case "lesson-border-type-1":
+                                        {
+
+                                            builder.Append("📚");
+                                            break;
+                                        }
+                                    case "lesson-border-type-3":
+                                        {
+                                            builder.Append("📝");
+                                            break;
+                                        }
+                                    case "lesson-border-type-2":
+                                        {
+                                            builder.Append("🧪");
+                                            break;
+                                        }
+                                    case "lesson-border-type-4":
+                                        {
+                                            break;
+                                        }
+                                }
                             builder.Append(cells[day].TextContent);
                         }
                         builder.AppendLine();
